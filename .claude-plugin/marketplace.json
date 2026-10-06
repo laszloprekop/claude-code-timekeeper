@@ -1,0 +1,5 @@
+{
+  "name": "laszloprekop-timekeeper",
+  "owner": { "name": "laszloprekop" },
+  "plugins": [{ "name": "timekeeper", "source": "./" }]
+}
