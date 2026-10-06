@@ -1,6 +1,13 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { formatClock, formatElapsed, labelOf, textKey } from '../hooks/format'
+import {
+  backgroundIdOf,
+  formatClock,
+  formatElapsed,
+  labelOf,
+  parseNotification,
+  textKey,
+} from '../hooks/format'
 
 const START = Date.UTC(2026, 9, 6, 12, 32, 7)
 
@@ -79,6 +86,92 @@ test('the band shows a long-running call with its elapsed time, then clears', as
   const after = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await after.find({ type: 'Text', text: /Bash/ })).toBeUndefined()
   await after.unmount()
+})
+
+test('reads a background task from a result and its end from a notification', () => {
+  expect(backgroundIdOf('Bash', { stdout: '', backgroundTaskId: 'bg-1' })).toBe('bg-1')
+  expect(backgroundIdOf('Bash', { stdout: 'done' })).toBeUndefined()
+  expect(backgroundIdOf('Agent', { status: 'async_launched', agentId: 'a1' })).toBe('a1')
+  expect(backgroundIdOf('Agent', { status: 'completed', agentId: 'a1' })).toBeUndefined()
+  expect(backgroundIdOf('Monitor', { taskId: 'm1', timeoutMs: 0 })).toBe('m1')
+  expect(backgroundIdOf('TaskGet', { taskId: 't1' })).toBeUndefined()
+
+  expect(
+    parseNotification(
+      '<task-notification>\n<task-id>bg-1</task-id>\n<tool-use-id>call-1</tool-use-id>\n<status>completed</status>\n</task-notification>',
+    ),
+  ).toEqual({ taskId: 'bg-1', toolUseId: 'call-1', status: 'completed' })
+  expect(parseNotification('<task-notification><task-id>m1</task-id></task-notification>')).toBeUndefined()
+  expect(parseNotification('hello')).toBeUndefined()
+})
+
+test('the band follows a background task until its notification', async ($, on) => {
+  const clock = mock.clock(on, { now: START })
+  const toasts: string[] = []
+
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+  on('ui.render', { component: 'AbovePrompt' }, (engine, e) => {
+    const { Text } = engine.ui.resolve(e)
+
+    return <Text>empty</Text>
+  })
+  on('tool.call', () => ({ result: { stdout: '', stderr: '', backgroundTaskId: 'bg-1' } }) as never)
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'call-1',
+    command: 'npm run dev',
+    description: 'Start the dev server',
+    run_in_background: true,
+  })
+
+  // The turn that started it ends; the task runs on.
+  await $.turn.complete({
+    answer: 'Started.',
+    durationMs: 1_000,
+    isAborted: false,
+    turnId: 'turn-1',
+    reason: 'answer',
+  })
+  await clock.advance(125_000)
+
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const row = await band.find({ type: 'Text', text: /Start the dev server/ })
+  expect(row?.text).toContain('2m 05s')
+  expect(row?.text).toContain('background')
+  await band.unmount()
+
+  // The kit has no store beneath the plugins, so the append itself rejects.
+  await $.session
+    .append({
+      message: {
+        type: 'user',
+        role: 'user',
+        isMeta: true,
+        content: [
+          {
+            type: 'text',
+            text: '<task-notification>\n<task-id>bg-1</task-id>\n<status>completed</status>\n</task-notification>',
+          },
+        ],
+      },
+      door: 'delivery',
+      origin: { kind: 'task-notification' },
+      uuid: 'row-9',
+    })
+    .catch(() => {})
+
+  const after = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await after.find({ type: 'Text', text: /Start the dev server/ })).toBeUndefined()
+  await after.unmount()
+  expect(toasts.join(' ')).toContain('completed after 2m 05s')
 })
 
 test('a stored message is drawn with the time it was stored', async ($, on) => {

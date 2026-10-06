@@ -1,6 +1,6 @@
 {
   "name": "timekeeper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Clock times on messages, a live band for long-running tool calls, and a toast when a long turn ends.",
   "types": "./types/index.d.ts",
   "author": {

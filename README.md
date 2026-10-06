@@ -8,6 +8,11 @@ A mod for Claude Code that shows when things happened and how long they are taki
 - **Progress band.** A tool call that has run for 3 seconds or more gets a row above the prompt,
   for example `1m 12s Bash Run the tests (since 14:32:07)`. It updates every second and
   disappears when the call ends.
+- **Background tasks.** A call that leaves its work running in the background (a background shell
+  command, a background agent, a monitor, a workflow) keeps its row, marked `background`, after
+  the turn ends. The row counts on until the task's notification arrives, then a notice says how
+  the task ended and how long it ran. `clear background rows` in the band drops rows whose
+  notification never came.
 - **Toast.** A turn that takes 30 seconds or longer ends with a notice such as
   `Finished 14:35:10, took 2m 4s`.
 
@@ -25,7 +30,8 @@ Answer `y` to add the marketplace, then choose a scope.
 
 - Messages stored before the mod loaded have no timestamp.
 - The band shows elapsed time, not a percentage.
-- Commands started in the background return at once, so the band does not time them.
+- A background task is followed from the call that started it. One started before the mod loaded
+  is not shown.
 - The mod API is early access and may change between Claude Code releases. Built against 2.1.292.
 
 ## Develop

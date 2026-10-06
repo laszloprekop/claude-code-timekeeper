@@ -2,7 +2,16 @@ import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { RunningTool } from '../types'
-import { formatClock, formatElapsed, labelOf, localOffsetMinutes, textKey } from './format'
+import {
+  backgroundIdOf,
+  formatClock,
+  formatElapsed,
+  labelOf,
+  localOffsetMinutes,
+  parseNotification,
+  textKey,
+} from './format'
+import type { TaskNotification } from './format'
 
 // A tool call shows in the band once it has run this long.
 const SHOW_AFTER_MS = 3_000
@@ -31,10 +40,30 @@ async function markFinal($: EngineInterface) {
   }
 }
 
+// Takes a background task that ended out of the band and says how it ended.
+async function settle($: EngineInterface, note: TaskNotification) {
+  const ended = (await read($, running)).find(
+    t => t.isBackground && (t.id === note.taskId || t.callId === note.toolUseId),
+  )
+
+  if (ended === undefined) {
+    return
+  }
+
+  await update($, running, list => list.filter(t => t.id !== ended.id))
+
+  const at = await $.clock.now()
+  const what = ended.label === '' ? ended.tool : `${ended.tool} ${ended.label}`
+  $.ui.toast(`Background ${what}: ${note.status} after ${formatElapsed(at - ended.startedAt)}`, {
+    timeoutMs: 8000,
+  })
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    // Calls left over from before a reload are no longer tracked.
-    await update($, running, () => [])
+    // Foreground calls left over from before a reload are no longer tracked;
+    // background tasks run on, and their notifications still end them.
+    await update($, running, list => list.filter(t => t.isBackground === true))
     // A reload lands when a turn ends, and may be what saw that turn's end.
     await markFinal($).catch(() => {})
 
@@ -54,12 +83,22 @@ export const register: Register = on => {
     try {
       const { type, isMeta, content } = e.message
       const isMessage = (type === 'user' || type === 'assistant') && isMeta !== true
+      const texts = content.flatMap(block =>
+        block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
+      )
+
+      // A background task's end reaches the conversation as a notification row.
+      if (type !== 'assistant' && e.agentId === undefined) {
+        for (const text of texts) {
+          const note = parseNotification(text)
+
+          if (note !== undefined) {
+            await settle($, note)
+          }
+        }
+      }
 
       if (isMessage && e.agentId === undefined) {
-        const texts = content.flatMap(block =>
-          block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
-        )
-
         if (texts.length > 0) {
           const at = await $.clock.now()
           await $.state.set({ ...STAMPS, id: e.uuid }, at)
@@ -117,10 +156,12 @@ export const register: Register = on => {
       const startedAt = await $.clock.now()
       const entry: RunningTool = {
         id: e.tool_use_id,
+        callId: e.tool_use_id,
         tool: e.tool,
         label: labelOf(e),
         startedAt,
         isSubagent: e.agentId !== undefined,
+        isBackground: false,
       }
 
       await update($, running, list => [...list.filter(t => t.id !== entry.id), entry])
@@ -129,10 +170,34 @@ export const register: Register = on => {
       // The call runs whether or not it is tracked.
     }
 
+    // A call that handed its work to the background stays in the band under
+    // the task's id, until the task's notification ends it.
+    let taskId: string | undefined
+    let stopped: string | undefined
+
     try {
-      return await next(e)
+      const ran = await next(e)
+
+      if (ran.deny === undefined && ran.isError !== true) {
+        taskId = backgroundIdOf(e.tool, ran.result)
+        stopped = e.tool === 'TaskStop' ? (e.task_id ?? e.shell_id) : undefined
+      }
+
+      return ran
     } finally {
-      await update($, running, list => list.filter(t => t.id !== e.tool_use_id)).catch(() => {})
+      await update($, running, list =>
+        list.flatMap(t => {
+          if (t.id === stopped) {
+            return []
+          }
+
+          if (t.id !== e.tool_use_id) {
+            return [t]
+          }
+
+          return taskId === undefined ? [] : [{ ...t, id: taskId, isBackground: true }]
+        }),
+      ).catch(() => {})
     }
   })
 
@@ -140,7 +205,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       try {
         // The main loop's calls have all settled by now.
-        await update($, running, list => list.filter(t => t.isSubagent))
+        await update($, running, list => list.filter(t => t.isSubagent || t.isBackground))
         await markFinal($)
 
         if (e.durationMs >= TOAST_AFTER_MS && !e.isAborted) {
@@ -161,13 +226,15 @@ export const register: Register = on => {
     }
 
     const at = await read($, now)
-    const shown = (await read($, running)).filter(t => at - t.startedAt >= SHOW_AFTER_MS)
+    const shown = (await read($, running)).filter(
+      t => t.isBackground || at - t.startedAt >= SHOW_AFTER_MS,
+    )
 
     if (shown.length === 0) {
       return next(e)
     }
 
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
 
     return (
       <Box flexDirection="column">
@@ -178,11 +245,22 @@ export const register: Register = on => {
             <Text>{t.label === '' ? '' : ` ${t.label}`}</Text>
             <Text dimColor>
               {' '}
-              (since {clock(t.startedAt)}
+              ({t.isBackground ? 'background, ' : ''}since {clock(t.startedAt)}
               {t.isSubagent ? ', subagent' : ''})
             </Text>
           </Text>
         ))}
+        {shown.some(t => t.isBackground) ? (
+          <Button
+            key="clear-background"
+            label="clear background rows"
+            plain
+            dimColor
+            onPress={() => update($, running, list => list.filter(t => !t.isBackground))}
+          />
+        ) : (
+          ''
+        )}
       </Box>
     )
   })
