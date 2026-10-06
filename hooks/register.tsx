@@ -1,5 +1,5 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { RunningTool } from '../types'
 import { formatClock, formatElapsed, labelOf, localOffsetMinutes, textKey } from './format'
@@ -13,15 +13,30 @@ const STAMPS = { plugin: 'timekeeper', key: 'stamps' } as const
 const stamps = atom(STAMPS, null)
 const running = atom({ plugin: 'timekeeper', key: 'running' } as const, [])
 const now = atom({ plugin: 'timekeeper', key: 'now' } as const, 0)
+const lastRow = atom({ plugin: 'timekeeper', key: 'lastRow' } as const, null)
 
 const clock = (ms: number) => formatClock(ms, localOffsetMinutes(ms))
-// Where a turn's closing text is marked, by its text.
-const finalKey = (text: string) => `final:${textKey(text)}`
+// Where a turn's closing block is marked: under its row id and its text's key.
+const finalKey = (id: string) => `final:${id}`
+
+// Marks the main loop's latest reply block as the one that closed its turn.
+async function markFinal($: EngineInterface) {
+  const row = await read($, lastRow)
+
+  if (row !== null) {
+    const at = await $.clock.now()
+    await $.state.set({ ...STAMPS, id: finalKey(row.uuid) }, at)
+    await $.state.set({ ...STAMPS, id: finalKey(row.key) }, at)
+    await update($, lastRow, () => null)
+  }
+}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Calls left over from before a reload are no longer tracked.
     await update($, running, () => [])
+    // A reload lands when a turn ends, and may be what saw that turn's end.
+    await markFinal($).catch(() => {})
 
     $.clock.every(1000, async () => {
       if ((await read($, running)).length > 0) {
@@ -51,6 +66,12 @@ export const register: Register = on => {
 
           for (const text of texts) {
             await $.state.set({ ...STAMPS, id: textKey(text) }, at)
+          }
+
+          const last = texts.at(-1)
+
+          if (type === 'assistant' && last !== undefined) {
+            await update($, lastRow, () => ({ uuid: e.uuid, key: textKey(last) }))
           }
         }
       }
@@ -83,7 +104,9 @@ export const register: Register = on => {
     }
 
     // The block that closed its turn carries the stop mark.
-    const isFinal = (await $.state.get({ ...STAMPS, id: finalKey(e.props.text) })).value != null
+    const isFinal =
+      (await $.state.get({ ...STAMPS, id: finalKey(e.requestId) })).value != null ||
+      (await $.state.get({ ...STAMPS, id: finalKey(textKey(e.props.text)) })).value != null
     const stamp = isFinal ? `■ ${clock(at)}` : clock(at)
 
     return next({ ...e, props: { ...e.props, text: `${e.props.text}\n\n${stamp}` } })
@@ -118,10 +141,7 @@ export const register: Register = on => {
       try {
         // The main loop's calls have all settled by now.
         await update($, running, list => list.filter(t => t.isSubagent))
-
-        if (e.answer.trim() !== '') {
-          await $.state.set({ ...STAMPS, id: finalKey(e.answer) }, await $.clock.now())
-        }
+        await markFinal($)
 
         if (e.durationMs >= TOAST_AFTER_MS && !e.isAborted) {
           const at = await $.clock.now()

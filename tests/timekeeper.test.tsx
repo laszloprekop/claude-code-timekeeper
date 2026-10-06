@@ -126,7 +126,7 @@ test('a stored message is drawn with the time it was stored', async ($, on) => {
 
   // Once its turn has ended, the closing block carries the stop mark.
   await $.turn.complete({
-    answer: 'All done.',
+    answer: 'A summary worded unlike the block.',
     durationMs: 1_000,
     isAborted: false,
     turnId: 'turn-1',

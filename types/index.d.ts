@@ -1,3 +1,6 @@
+// The main loop's latest reply block: its row id and its text's key.
+export type LastRow = { uuid: string; key: string }
+
 export type RunningTool = {
   id: string
   tool: string
@@ -12,6 +15,7 @@ declare module 'claude-code' {
       stamps: StateFamily<number | null>
       running: RunningTool[]
       now: number
+      lastRow: LastRow | null
     }
   }
 }
