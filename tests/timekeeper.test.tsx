@@ -84,6 +84,8 @@ test('the band shows a long-running call with its elapsed time, then clears', as
 test('a stored message is drawn with the time it was stored', async ($, on) => {
   mock.clock(on, { now: START })
 
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+
   let drawn = ''
   on('ui.render', { component: 'AssistantMessage' }, (engine, e) => {
     const { Text } = engine.ui.resolve(e)
@@ -111,7 +113,7 @@ test('a stored message is drawn with the time it was stored', async ($, on) => {
     requestId: 'row-1',
     props: { text: 'All done.', isFirstOfReply: true },
   })
-  expect(drawn).toBe(`All done.\n\n*${stamp}*`)
+  expect(drawn).toBe(`All done.\n\n${stamp}`)
 
   // A row drawn under another id is found by its text.
   await $.ui.render({
@@ -120,7 +122,23 @@ test('a stored message is drawn with the time it was stored', async ($, on) => {
     requestId: 'another-id',
     props: { text: 'All done.', isFirstOfReply: true },
   })
-  expect(drawn).toBe(`All done.\n\n*${stamp}*`)
+  expect(drawn).toBe(`All done.\n\n${stamp}`)
+
+  // Once its turn has ended, the closing block carries the stop mark.
+  await $.turn.complete({
+    answer: 'All done.',
+    durationMs: 1_000,
+    isAborted: false,
+    turnId: 'turn-1',
+    reason: 'answer',
+  })
+  await $.ui.render({
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    requestId: 'row-1',
+    props: { text: 'All done.', isFirstOfReply: true },
+  })
+  expect(drawn).toBe(`All done.\n\n■ ${stamp}`)
 
   await $.ui.render({
     surface: 'terminal',

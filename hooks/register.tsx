@@ -15,6 +15,8 @@ const running = atom({ plugin: 'timekeeper', key: 'running' } as const, [])
 const now = atom({ plugin: 'timekeeper', key: 'now' } as const, 0)
 
 const clock = (ms: number) => formatClock(ms, localOffsetMinutes(ms))
+// Where a turn's closing text is marked, by its text.
+const finalKey = (text: string) => `final:${textKey(text)}`
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -68,7 +70,7 @@ export const register: Register = on => {
       return next(e)
     }
 
-    return next({ ...e, props: { ...e.props, text: `${e.props.text}  [${clock(at)}]` } })
+    return next({ ...e, props: { ...e.props, text: `${e.props.text}  ▶ ${clock(at)}` } })
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
@@ -80,7 +82,11 @@ export const register: Register = on => {
       return next(e)
     }
 
-    return next({ ...e, props: { ...e.props, text: `${e.props.text}\n\n*${clock(at)}*` } })
+    // The block that closed its turn carries the stop mark.
+    const isFinal = (await $.state.get({ ...STAMPS, id: finalKey(e.props.text) })).value != null
+    const stamp = isFinal ? `■ ${clock(at)}` : clock(at)
+
+    return next({ ...e, props: { ...e.props, text: `${e.props.text}\n\n${stamp}` } })
   })
 
   on('tool.call', async ($, e, next) => {
@@ -112,6 +118,10 @@ export const register: Register = on => {
       try {
         // The main loop's calls have all settled by now.
         await update($, running, list => list.filter(t => t.isSubagent))
+
+        if (e.answer.trim() !== '') {
+          await $.state.set({ ...STAMPS, id: finalKey(e.answer) }, await $.clock.now())
+        }
 
         if (e.durationMs >= TOAST_AFTER_MS && !e.isAborted) {
           const at = await $.clock.now()

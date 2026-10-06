@@ -2,8 +2,9 @@
 
 A mod for Claude Code that shows when things happened and how long they are taking.
 
-- **Timestamps.** Each prompt ends with `[14:32:07]`, and each block of a reply ends with the
-  time in italics. Times are in the local time zone.
+- **Timestamps.** Each prompt ends with `▶ 14:32:07`, and each block of a reply ends with its
+  time on a line of its own. The block that closes the turn is marked `■ 14:32:41`. Times are in
+  the local time zone.
 - **Progress band.** A tool call that has run for 3 seconds or more gets a row above the prompt,
   for example `1m 12s Bash Run the tests (since 14:32:07)`. It updates every second and
   disappears when the call ends.
